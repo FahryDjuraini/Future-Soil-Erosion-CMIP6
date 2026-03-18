@@ -149,9 +149,7 @@ Required libraries:
 
 ## 👨‍💻 Author
 
-**Moh. Fahry Djuraini**  
-Master Program in Geography  
-Universitas Gadjah Mada  
+Djuraini, M. F., Utami, S., Adzimah, N. L., Benediktus, S., Mellyana, I. M., Putri, N. R. C., Hidayat, W., & Mulabbi, A. (2026)
 
 ---
 
