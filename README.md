@@ -169,6 +169,10 @@ Required libraries:
 
 Djuraini, M. F., Utami, S., Adzimah, N. L., Benediktus, S., Mellyana, I. M., Putri, N. R. C., Hidayat, W., & Mulabbi, A. (2026).
 
+How to cite :
+
+Djuraini, M. F., Utami, S., Adzimah, N. L., Benediktus, S., Mellyana, I. M., Putri, N. R. C., Hidayat, W., & Mulabbi, A. (2026). Climate Change Impacts on Soil Erosion in a Tropical Watershed: Insights from SINGV Regional Climate Modeling and RUSLE [Data set]. Zenodo. https://doi.org/10.5281/zenodo.19089923
+
 ---
 
 ## 📬 Contact
