@@ -1,0 +1,185 @@
+# =====================================================
+# 🌍 DELTA SOIL EROSION MAP (Future - Historical)
+# 🔹 1x4 Horizontal Layout
+# 🔹 Diverging Visualization (Increase vs Decrease)
+# =====================================================
+
+import os
+import rasterio
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+# -----------------------------------------------------
+# 1️⃣ PATH
+# -----------------------------------------------------
+data_path = r"C:\Users\Windows 10\Documents\Python Journey\Erosi Biyonga\Data Erosi"
+output_path = os.path.join(data_path, "Delta_Erosion_1x4.png")
+
+files = {
+    "Historical": "SoilLoss_2024.tif",
+    "SSP245 2040": "SoilLoss_2040_SSP245.tif",
+    "SSP245 2060": "SoilLoss_2060_SSP245.tif",
+    "SSP585 2040": "SoilLoss_2040_SSP585.tif",
+    "SSP585 2060": "SoilLoss_2060_SSP585.tif"
+}
+
+# -----------------------------------------------------
+# 2️⃣ LOAD RASTER
+# -----------------------------------------------------
+rasters = {}
+extent = None
+
+for key, file in files.items():
+    with rasterio.open(os.path.join(data_path, file)) as src:
+        data = src.read(1).astype("float32")
+        data[data <= 0] = np.nan
+        rasters[key] = data
+
+        if extent is None:
+            bounds = src.bounds
+            extent = [bounds.left, bounds.right,
+                      bounds.bottom, bounds.top]
+
+baseline = rasters["Historical"]
+
+# -----------------------------------------------------
+# 3️⃣ HITUNG DELTA (Future - Historical)
+# -----------------------------------------------------
+delta_maps = {
+    "Δ SSP245 2040": rasters["SSP245 2040"] - baseline,
+    "Δ SSP245 2060": rasters["SSP245 2060"] - baseline,
+    "Δ SSP585 2040": rasters["SSP585 2040"] - baseline,
+    "Δ SSP585 2060": rasters["SSP585 2060"] - baseline
+}
+
+# -----------------------------------------------------
+# 4️⃣ ANALISIS STATISTIK DELTA
+# -----------------------------------------------------
+
+analysis_results = []
+
+# Ambil pixel area (m2)
+with rasterio.open(os.path.join(data_path, files["Historical"])) as src:
+    pixel_area = abs(src.res[0] * src.res[1])  # m2
+
+for scenario, delta in delta_maps.items():
+
+    valid = delta[~np.isnan(delta)]
+
+    mean_delta = np.mean(valid)
+    median_delta = np.median(valid)
+    min_delta = np.min(valid)
+    max_delta = np.max(valid)
+
+    # Area increase / decrease / stable
+    increase_area = np.sum(delta > 5) * pixel_area / 10000
+    decrease_area = np.sum(delta < -5) * pixel_area / 10000
+    stable_area = np.sum((delta >= -5) & (delta <= 5)) * pixel_area / 10000
+
+    total_area = (np.sum(~np.isnan(delta)) * pixel_area) / 10000
+
+    increase_pct = (increase_area / total_area) * 100
+    decrease_pct = (decrease_area / total_area) * 100
+    stable_pct = (stable_area / total_area) * 100
+
+    analysis_results.append([
+        scenario,
+        round(mean_delta,2),
+        round(median_delta,2),
+        round(min_delta,2),
+        round(max_delta,2),
+        round(increase_area,2),
+        round(decrease_area,2),
+        round(stable_area,2),
+        round(increase_pct,2),
+        round(decrease_pct,2),
+        round(stable_pct,2)
+    ])
+
+# -----------------------------------------------------
+# 5️⃣ TAMPILKAN TABEL
+# -----------------------------------------------------
+
+import pandas as pd
+
+columns = [
+    "Scenario",
+    "Mean Δ (t/ha/yr)",
+    "Median Δ",
+    "Min Δ",
+    "Max Δ",
+    "Area Increase (ha)",
+    "Area Decrease (ha)",
+    "Area Stable (ha)",
+    "% Increase",
+    "% Decrease",
+    "% Stable"
+]
+
+df_analysis = pd.DataFrame(analysis_results, columns=columns)
+
+print("\n===== DELTA SOIL EROSION ANALYSIS =====\n")
+display(df_analysis)
+
+
+# -----------------------------------------------------
+# 4️⃣ SYMMETRIC COLOR SCALE
+# -----------------------------------------------------
+all_delta = np.concatenate([d.flatten() for d in delta_maps.values()])
+all_delta = all_delta[~np.isnan(all_delta)]
+
+vmax = np.percentile(np.abs(all_delta), 95)
+
+cmap = plt.cm.RdBu_r  # Biru = turun, Merah = naik
+norm = mcolors.TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+
+# -----------------------------------------------------
+# 5️⃣ PLOT 1x4 HORIZONTAL
+# -----------------------------------------------------
+fig, axes = plt.subplots(1, 4, figsize=(16, 10))
+axes = axes.flatten()
+
+panel_labels = ["(a)", "(b)", "(c)", "(d)"]
+
+for ax, label, (title, data) in zip(axes, panel_labels, delta_maps.items()):
+
+    im = ax.imshow(
+        data,
+        extent=extent,
+        origin="upper",
+        cmap=cmap,
+        norm=norm
+    )
+
+    ax.set_title(f"{label} {title}", fontsize=11, weight="bold")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_aspect("equal")
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+plt.subplots_adjust(wspace=0.02, bottom=0.22)
+
+# -----------------------------------------------------
+# 6️⃣ COLORBAR HORIZONTAL
+# -----------------------------------------------------
+cbar = fig.colorbar(
+    im,
+    ax=axes,
+    orientation="horizontal",
+    fraction=0.05,
+    pad=0.08
+)
+
+cbar.set_label("Δ Soil Loss (t/ha/year)", fontsize=11)
+cbar.ax.tick_params(labelsize=9)
+
+# -----------------------------------------------------
+# 7️⃣ SAVE
+# -----------------------------------------------------
+plt.savefig(output_path, dpi=450, bbox_inches="tight")
+plt.show()
+
+print(f"\n✅ Delta erosion map saved at:\n{output_path}")

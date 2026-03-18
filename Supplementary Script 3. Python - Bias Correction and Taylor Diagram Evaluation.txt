@@ -1,0 +1,494 @@
+# ============================================================
+# FULLSCRIPT: QM HYBRID + MME MEAN/MEDIAN + EVALUASI + TAYLOR
+# ============================================================
+
+import os
+import re
+import numpy as np
+import pandas as pd
+from scipy.stats import pearsonr, gamma, rankdata
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+# ===============================
+# USER INPUT
+# ===============================
+input_file = r"C:\Users\Windows 10\Documents\Python Journey\01 Tesis\RCM-SINGV\Data-Model-Historis.xlsx"
+output_dir = r"C:\Users\Windows 10\Documents\Python Journey\Erosi Biyonga\Taylor_Output"
+os.makedirs(output_dir, exist_ok=True)
+
+threshold = 1.0
+min_pos_len = 10
+quant_grid = np.linspace(0.001, 0.999, 999)
+
+rcm_models_canonical = [
+    "ACCESS-CM2",
+    "EC-Earth3",
+    "MIROC6",
+    "MPI-ESM1-2-HR",
+    "NorESM2-MM",
+    "UKESM1-0-LL"
+]
+
+# ===============================
+# NORMALISASI NAMA KOLOM
+# ===============================
+def normalize_colname(c):
+    c2 = re.sub(r'[^A-Za-z0-9]', '_', str(c).upper())
+    c2 = re.sub(r'_+', '_', c2).strip('_')
+    return c2
+
+def canonical_to_normalized(name):
+    return normalize_colname(name)
+
+rcm_models_norm = [canonical_to_normalized(m) for m in rcm_models_canonical]
+model_map = dict(zip(rcm_models_canonical, rcm_models_norm))
+
+# ===============================
+# METRIC FUNCTIONS
+# ===============================
+def rmse(o, s):
+    o = np.array(o, dtype=float); s = np.array(s, dtype=float)
+    return np.sqrt(np.nanmean((s - o)**2))
+
+def pbias(o, s):
+    o = np.array(o, dtype=float); s = np.array(s, dtype=float)
+    return 100 * np.nansum(s - o) / (np.nansum(o) + 1e-12)
+
+def kge(o, s):
+    o = np.array(o, dtype=float); s = np.array(s, dtype=float)
+    if np.nanstd(o) == 0 or np.nanstd(s) == 0:
+        return np.nan
+    cc = np.corrcoef(o, s)[0, 1]
+    alpha = np.nanstd(s) / (np.nanstd(o) + 1e-12)
+    beta  = np.nanmean(s) / (np.nanmean(o) + 1e-12)
+    return 1 - np.sqrt((cc-1)**2 + (alpha-1)**2 + (beta-1)**2)
+
+# ===============================
+# HYBRID QM FUNCTIONS
+# ===============================
+def to_num(s):
+    return pd.to_numeric(s, errors="coerce")
+
+def fit_qm_monthly_params(obs_series, mod_series, threshold=1.0):
+
+    df = pd.DataFrame({"obs": obs_series.values,
+                       "mod": mod_series.values},
+                       index=obs_series.index)
+
+    df["month"] = df.index.month
+    month_models = {}
+
+    for m in range(1,13):
+
+        sub = df[df["month"]==m]
+
+        if sub.empty:
+            month_models[m] = {
+                "method":"empirical",
+                "params":{"p":np.array([0,1]),"q_obs":np.array([0,0])},
+                "mean_obs":0.0,
+                "std_obs":0.0
+            }
+            continue
+
+        obs_m = to_num(sub["obs"]).copy()
+        mod_m = to_num(sub["mod"]).copy()
+
+        obs_m[obs_m<=0]=1e-4
+        mod_m[mod_m<=0]=1e-4
+
+        obs_pos = obs_m[obs_m>=threshold]
+        mod_pos = mod_m[mod_m>=threshold]
+
+        mean_obs=float(np.nanmean(obs_m))
+        std_obs=float(np.nanstd(obs_m))
+
+        if len(obs_pos)>=min_pos_len and len(mod_pos)>=min_pos_len:
+
+            mean_o,var_o=np.mean(obs_pos),np.var(obs_pos)
+            mean_m,var_m=np.mean(mod_pos),np.var(mod_pos)
+
+            if mean_o>0 and var_o>0 and mean_m>0 and var_m>0:
+
+                O_alpha=(mean_o**2)/var_o
+                O_beta=var_o/mean_o
+
+                M_alpha=(mean_m**2)/var_m
+                M_beta=var_m/mean_m
+
+                month_models[m]={
+                    "method":"gamma",
+                    "params":{
+                        "O_alpha":float(O_alpha),
+                        "O_beta":float(O_beta),
+                        "M_alpha":float(M_alpha),
+                        "M_beta":float(M_beta)
+                    },
+                    "mean_obs":mean_obs,
+                    "std_obs":std_obs
+                }
+
+                continue
+
+        q_obs=np.quantile(obs_m,quant_grid)
+
+        month_models[m]={
+            "method":"empirical",
+            "params":{
+                "p":quant_grid,
+                "q_obs":q_obs.astype(float)
+            },
+            "mean_obs":mean_obs,
+            "std_obs":std_obs
+        }
+
+    return month_models
+
+
+def apply_qm_to_series(series,month_models,threshold=1.0):
+
+    s=pd.Series(to_num(series).values,index=series.index)
+    s_fill=s.copy()
+
+    s_fill[s_fill<=0]=1e-4
+
+    months=s_fill.index.month
+    corrected=np.zeros_like(s_fill.values,float)
+
+    for m in range(1,13):
+
+        mask=(months==m)
+        if not mask.any():continue
+
+        vals=s_fill[mask].values
+        raw=s[mask].values
+        model=month_models[m]
+
+        if model["method"]=="gamma":
+
+            par=model["params"]
+
+            F=gamma.cdf(vals,
+                        par["M_alpha"],
+                        scale=par["M_beta"])
+
+            x_corr=gamma.ppf(
+                np.clip(F,1e-6,1-1e-6),
+                par["O_alpha"],
+                scale=par["O_beta"]
+            )
+
+        else:
+
+            p=model["params"]["p"]
+            q_obs=model["params"]["q_obs"]
+
+            F=rankdata(vals,method="average")/(len(vals)+1.0)
+
+            x_corr=np.interp(F,p,q_obs)
+
+        x_corr=np.where(np.isnan(x_corr),vals,x_corr)
+        x_corr[x_corr<0]=0.0
+
+        mean_obs=model["mean_obs"]
+        std_obs=model["std_obs"]
+
+        if std_obs>0:
+
+            mc,sc=np.nanmean(x_corr),np.nanstd(x_corr)
+
+            if sc>0:
+                x_corr=(x_corr-mc)*(std_obs/sc)+mean_obs
+
+            mc2=np.nanmean(x_corr)
+
+            if mc2!=0:
+                x_corr*=mean_obs/(mc2+1e-12)
+
+        x_corr[raw<threshold]=0.0
+
+        corrected[mask]=x_corr
+
+    return pd.Series(corrected,index=series.index,name="QM")
+
+
+# ===============================
+# MME MEAN + MEDIAN
+# ===============================
+def mme_statistics(df,models):
+
+    arr=np.array(df[models].values,float)
+
+    mme_mean=np.nanmean(arr,axis=1)
+    mme_median=np.nanmedian(arr,axis=1)
+
+    return {
+        "MME_MEAN":pd.Series(mme_mean,index=df.index),
+        "MME_MEDIAN":pd.Series(mme_median,index=df.index)
+    }
+
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
+xls=pd.ExcelFile(input_file)
+
+print("\n🚀 MULAI PROSES QM + TAYLOR DIAGRAM\n")
+
+for sheet in xls.sheet_names:
+
+    print("="*110)
+    print("STASIUN:",sheet)
+    print("="*110)
+
+    df_raw=pd.read_excel(input_file,sheet_name=sheet)
+
+    df_raw.columns=[normalize_colname(c) for c in df_raw.columns]
+
+    if "DATE" not in df_raw.columns or "OBSERVASI" not in df_raw.columns:
+        continue
+
+    df_raw["DATE"]=pd.to_datetime(df_raw["DATE"],errors="coerce")
+
+    df=df_raw.dropna(subset=["DATE"]).set_index("DATE").sort_index()
+
+    available_models_norm=[m for m in rcm_models_norm if m in df.columns]
+
+    for c in ["OBSERVASI"]+available_models_norm:
+        df[c]=pd.to_numeric(df[c],errors="coerce")
+
+    obs=df["OBSERVASI"].astype(float)
+
+    display_map={normalize_colname(m):m for m in rcm_models_canonical}
+
+    # ===============================
+    # MME
+    # ===============================
+    mme_stats=mme_statistics(df,available_models_norm)
+
+    for k,v in mme_stats.items():
+        df[k]=v
+
+    mme_models_norm=list(mme_stats.keys())
+
+    all_models_norm=available_models_norm+mme_models_norm
+
+    # ===============================
+    # FIT QM
+    # ===============================
+    qm_model_params={}
+
+    for norm in all_models_norm:
+        qm_model_params[norm]=fit_qm_monthly_params(obs,df[norm],threshold)
+
+    # ===============================
+    # APPLY QM
+    # ===============================
+    df_QM={}
+
+    for norm in all_models_norm:
+        df_QM[norm]=apply_qm_to_series(df[norm],qm_model_params[norm],threshold)
+
+    # ===============================
+    # MONTHLY DATA
+    # ===============================
+    df_m=df.resample("ME").sum()
+    obs_m=df_m["OBSERVASI"]
+
+    df_m_QM={norm:df_QM[norm].resample("ME").sum() for norm in all_models_norm}
+
+    # ============================================================
+    # STATISTIK EVALUASI MODEL (MONTHLY AFTER QM)
+    # ============================================================
+    
+    print("\n📊 STATISTIK EVALUASI MODEL (Monthly After QM)\n")
+    
+    stats_results = []
+    
+    for norm in all_models_norm:
+    
+        sim = df_m_QM[norm].values
+        obs_arr = obs_m.values
+    
+        if len(sim) != len(obs_arr):
+            n = min(len(sim), len(obs_arr))
+            sim = sim[:n]
+            obs_arr = obs_arr[:n]
+    
+        corr = pearsonr(sim, obs_arr)[0] if np.nanstd(sim) > 0 else np.nan
+        sd = np.nanstd(sim)
+    
+        rmse_val = rmse(obs_arr, sim)
+        pbias_val = pbias(obs_arr, sim)
+        kge_val = kge(obs_arr, sim)
+    
+        stats_results.append([
+            norm,
+            corr,
+            sd,
+            rmse_val,
+            pbias_val,
+            kge_val
+        ])
+    
+    stats_df = pd.DataFrame(
+        stats_results,
+        columns=["Model","Corr","STD","RMSE","PBIAS","KGE"]
+    )
+    
+    stats_df = stats_df.sort_values("Corr", ascending=False)
+    
+    print(stats_df.to_string(index=False, float_format="%.3f"))
+
+
+    
+    # ============================================================
+    # TAYLOR DIAGRAM
+    # ============================================================
+
+    print("Membuat Taylor Diagram")
+
+    obs_m_arr=np.array(obs_m.values,float)
+
+    monthly_after={norm:np.array(df_m_QM[norm].values,float) for norm in all_models_norm}
+
+    sd_models=[]
+    corr_models=[]
+    labels=[]
+
+    for norm in all_models_norm:
+
+        sim=monthly_after[norm]
+
+        if np.nanstd(sim)==0 or np.nanstd(obs_m_arr)==0:
+            continue
+
+        sd=np.nanstd(sim)
+        rr=pearsonr(sim,obs_m_arr)[0]
+
+        sd_models.append(sd)
+        corr_models.append(rr)
+        labels.append(norm)
+
+    sd_models=np.array(sd_models)
+    corr_models=np.array(corr_models)
+
+    sd_obs=float(np.nanstd(obs_m_arr))
+
+    def corr_to_theta(r):
+        return np.arccos(np.clip(r,-1,1))
+
+    max_sd=max(sd_obs,sd_models.max())*1.15
+
+    fig=plt.figure(figsize=(8,8),dpi=300)
+    ax=fig.add_subplot(111,polar=True)
+
+    ax.set_theta_zero_location("E")
+    ax.set_thetamin(0)
+    ax.set_thetamax(90)
+    ax.set_rmax(max_sd)
+
+    # STD circles
+    std_levels=np.linspace(0,max_sd,6)[1:]
+
+    for sd in std_levels:
+        ax.plot(np.linspace(0,np.pi/2,200),
+                np.ones(200)*sd,
+                linestyle="-.",
+                color="k",
+                linewidth=1)
+
+    # correlation lines
+    corr_vals=[0.95,0.9,0.8,0.7,0.6,0.5,0.4,0.3]
+
+    for r in corr_vals:
+
+        th=corr_to_theta(r)
+
+        ax.plot([th,th],[0,max_sd],
+                linestyle="--",
+                color="b")
+
+        ax.text(th,max_sd*1.03,
+                f"{r:.2f}",
+                ha='center',
+                fontsize=8)
+
+    # OBS
+    ax.plot(0,sd_obs,'o',
+            color='r',
+            markersize=12,
+            markeredgecolor='black')
+
+    ax.text(0,sd_obs*1.05,"Obs",color='r')
+
+    # MODEL COLORS
+    mme_colors={
+        "MME_MEAN":"#d73027",
+        "MME_MEDIAN":"#1a9850"
+    }
+
+    cmap=plt.cm.Set2(np.linspace(0,1,len(rcm_models_norm)))
+
+    color_map={}
+    idx=0
+
+    for lab in labels:
+
+        if lab in mme_colors:
+            color_map[lab]=mme_colors[lab]
+        else:
+            color_map[lab]=cmap[idx]
+            idx+=1
+
+    handles=[]
+    names=[]
+
+    for i,lab in enumerate(labels):
+
+        theta=corr_to_theta(corr_models[i])
+        radius=sd_models[i]
+
+        if lab=="MME_MEAN":
+            pretty="MME Mean"
+            marker="^"
+        elif lab=="MME_MEDIAN":
+            pretty="MME Median"
+            marker="^"
+        else:
+            pretty=display_map.get(lab,lab)
+            marker="o"
+
+        p=ax.plot(theta,radius,
+                  marker,
+                  markersize=10,
+                  markeredgecolor='black',
+                  color=color_map[lab])[0]
+
+        handles.append(p)
+        names.append(pretty)
+
+    ax.legend(handles,names,
+              loc='upper left',
+              bbox_to_anchor=(0.85,1.05),
+              fontsize=8,
+              frameon=False)
+
+    plt.title(f"{sheet} — Taylor Diagram",fontsize=12,y=1.05)
+
+    safe_name=re.sub(r'[^A-Za-z0-9_]','_',sheet)
+
+    file_path=os.path.join(output_dir,f"Taylor_{safe_name}.png")
+
+    plt.savefig(file_path,
+                dpi=300,
+                bbox_inches='tight')
+
+    print("Disimpan:",file_path)
+
+    plt.close()
+
+print("\n✅ Taylor Diagram selesai untuk semua stasiun.")

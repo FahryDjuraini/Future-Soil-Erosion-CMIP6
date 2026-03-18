@@ -1,0 +1,217 @@
+# =====================================================
+# 🌍 RUSLE FACTORS + HISTORICAL SOIL LOSS
+# Journal Layout (2x3 Panel)
+# Continuous data with class-style legend
+# =====================================================
+
+import os
+import rasterio
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+# -----------------------------------------------------
+# 1️⃣ PATH
+# -----------------------------------------------------
+data_path = r"C:\Users\Windows 10\Documents\Python Journey\Erosi Biyonga\Data Erosi"
+
+files = {
+    "a) R Factor": "R_factor.tif",
+    "b) K Factor": "K_factor.tif",
+    "c) LS Factor": "LS_factor.tif",
+    "d) C Factor": "C_factor.tif",
+    "e) P Factor": "P_factor.tif",
+    "f) Historical Soil Loss": "SoilLoss_2024.tif"
+}
+
+output_path = os.path.join(
+    data_path,
+    "RUSLE_Factors_Historical.png"
+)
+
+# -----------------------------------------------------
+# 2️⃣ LOAD RASTER
+# -----------------------------------------------------
+rasters = {}
+extent = None
+
+for key, file in files.items():
+
+    with rasterio.open(os.path.join(data_path, file)) as src:
+
+        data = src.read(1).astype("float32")
+
+        nodata = src.nodata
+        if nodata is not None:
+            data[data == nodata] = np.nan
+
+        rasters[key] = data
+
+        if extent is None:
+            bounds = src.bounds
+            extent = [
+                bounds.left,
+                bounds.right,
+                bounds.bottom,
+                bounds.top
+            ]
+
+# -----------------------------------------------------
+# 3️⃣ STYLE (CLASS INTERVAL LEGEND)
+# -----------------------------------------------------
+styles = {
+
+    "a) R Factor": dict(
+        cmap="jet",
+        bounds=[600,650,700,750,800,850,900],
+        unit="MJ mm ha⁻¹ h⁻¹ yr⁻¹"
+    ),
+
+    "b) K Factor": dict(
+        cmap="YlOrRd",
+        bounds=[0,0.01,0.02,0.03,0.04,0.05],
+        unit="t ha h ha⁻¹ MJ⁻¹ mm⁻¹"
+    ),
+
+    "c) LS Factor": dict(
+        cmap="YlGnBu",
+        bounds=[0,5,10,15,20,30],
+        unit="unitless"
+    ),
+
+    "d) C Factor": dict(
+        cmap="RdYlGn_r",
+        bounds=[0,0.2,0.4,0.6,0.8,1],
+        unit="unitless"
+    ),
+
+    "e) P Factor": dict(
+        cmap="RdYlGn_r",
+        bounds=[0.5,0.6,0.7,0.8,0.9,1],
+        unit="unitless"
+    ),
+
+    "f) Historical Soil Loss": dict(
+        cmap="RdYlGn_r",
+        bounds=[0,15,60,180,480,800],
+        unit="t ha⁻¹ yr⁻¹"
+    )
+}
+
+# -----------------------------------------------------
+# 4️⃣ PLOT 2x3 LAYOUT
+# -----------------------------------------------------
+fig, axes = plt.subplots(2, 3, figsize=(11,9))
+
+axes = axes.flatten()
+
+for ax, (title, data) in zip(axes, rasters.items()):
+
+    style = styles[title]
+
+    cmap = plt.get_cmap(style["cmap"])
+
+    norm = mcolors.BoundaryNorm(
+        style["bounds"],
+        cmap.N
+    )
+
+    im = ax.imshow(
+        data,
+        extent=extent,
+        origin="upper",
+        cmap=cmap,
+        norm=norm
+    )
+
+    ax.set_title(title, fontsize=11, weight="bold")
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    ax.set_aspect("equal")
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    # Colorbar
+    cbar = fig.colorbar(
+        im,
+        ax=ax,
+        fraction=0.046,
+        pad=0.02,
+        ticks=style["bounds"]
+    )
+
+    cbar.ax.tick_params(labelsize=8)
+    cbar.set_label(style["unit"], fontsize=9)
+
+# -----------------------------------------------------
+# 5️⃣ SPACING
+# -----------------------------------------------------
+plt.subplots_adjust(
+    wspace=0.08,
+    hspace=0.15
+)
+
+# -----------------------------------------------------
+# 6️⃣ SAVE FIGURE
+# -----------------------------------------------------
+plt.savefig(
+    output_path,
+    dpi=450,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("\n✅ RUSLE layout saved at:")
+print(output_path)
+
+# =====================================================
+# 📊 STATISTICAL ANALYSIS OF RUSLE FACTORS
+# =====================================================
+
+import pandas as pd
+
+stats_results = []
+
+pixel_area = None
+
+# Ambil pixel size dari raster pertama
+with rasterio.open(os.path.join(data_path, list(files.values())[0])) as src:
+    pixel_area = abs(src.res[0] * src.res[1])  # m²
+
+for title, data in rasters.items():
+
+    valid = data[~np.isnan(data)]
+
+    mean_val = np.mean(valid)
+    median_val = np.median(valid)
+    min_val = np.min(valid)
+    max_val = np.max(valid)
+    std_val = np.std(valid)
+
+    stats_results.append([
+        title,
+        round(mean_val,4),
+        round(median_val,4),
+        round(min_val,4),
+        round(max_val,4),
+        round(std_val,4)
+    ])
+
+columns = [
+    "Factor",
+    "Mean",
+    "Median",
+    "Min",
+    "Max",
+    "Std Dev"
+]
+
+df_stats = pd.DataFrame(stats_results, columns=columns)
+
+print("\n===== RUSLE FACTOR STATISTICS =====\n")
+
+display(df_stats)

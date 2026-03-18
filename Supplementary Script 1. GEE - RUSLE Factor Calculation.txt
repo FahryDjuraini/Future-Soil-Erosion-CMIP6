@@ -1,0 +1,273 @@
+// =============================================================================
+// RUSLE FACTORS MODULE – GLOBAL VERSION (Google Earth Engine)
+// =============================================================================
+// Factors : K · R · LS · S
+// Data sources: SoilGrids, CHIRPS, MERIT Hydro, HiHydroSoil v2.0
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// FACTOR K — Soil Erodibility (SoilGrids 0–30 cm)
+// -----------------------------------------------------------------------------
+
+exports.factorK = function () {
+
+  // --- SoilGrids inputs (depth-weighted mean 0–30 cm) ---
+
+  var clay = ee.Image("projects/soilgrids-isric/clay_mean")
+    .select(["clay_0-5cm_mean", "clay_5-15cm_mean", "clay_15-30cm_mean"])
+    .reduce(ee.Reducer.mean())
+    .divide(10)
+    .rename("clay");
+
+  var sand = ee.Image("projects/soilgrids-isric/sand_mean")
+    .select(["sand_0-5cm_mean", "sand_5-15cm_mean", "sand_15-30cm_mean"])
+    .reduce(ee.Reducer.mean())
+    .divide(10)
+    .clamp(0, 20)
+    .rename("sand");
+
+  var silt = ee.Image("projects/soilgrids-isric/silt_mean")
+    .select(["silt_0-5cm_mean", "silt_5-15cm_mean", "silt_15-30cm_mean"])
+    .reduce(ee.Reducer.mean())
+    .divide(10)
+    .clamp(0, 70)
+    .rename("silt");
+
+  var OM = ee.Image("projects/soilgrids-isric/soc_mean")
+    .select(["soc_0-5cm_mean", "soc_5-15cm_mean", "soc_15-30cm_mean"])
+    .reduce(ee.Reducer.mean())
+    .divide(100)
+    .multiply(1.72)
+    .rename("OM");
+
+  var bulk_density = ee.Image("projects/soilgrids-isric/bdod_mean")
+    .select(["bdod_0-5cm_mean", "bdod_5-15cm_mean", "bdod_15-30cm_mean"])
+    .reduce(ee.Reducer.mean())
+    .divide(100)
+    .rename("bulk_density");
+
+
+  // --- Packing Density ---
+  var pack_density = bulk_density.add(clay.multiply(0.009));
+
+
+  // --- Texture Class (1–5; 9 = organic soil) ---
+  var texture_class = clay.lt(18).and(sand.gt(65))
+    .add(
+      clay.lt(35).and(sand.gt(15))
+        .or(clay.gt(18).and(sand.gt(65)))
+        .multiply(2)
+    )
+    .add(clay.lt(35).and(sand.lt(15)).multiply(3))
+    .add(clay.gte(35).and(clay.lte(60)).multiply(4))
+    .add(clay.gt(60).multiply(5));
+
+  var organic_soil_test = clay
+    .updateMask(OM.gte(20))
+    .interpolate([0, 50], [20, 30], "clamp");
+
+  texture_class = texture_class.add(
+    texture_class.eq(0)
+      .and(OM.gte(organic_soil_test))
+      .unmask(0)
+      .multiply(9)
+  );
+
+
+  // --- Structure Class ---
+  var structure_class = ee.Image(0)
+    .add(texture_class.eq(1).and(pack_density.lt(1.40)).multiply(4))
+    .add(texture_class.eq(1).and(pack_density.gte(1.40).and(pack_density.lte(1.75))).multiply(3))
+    .add(texture_class.eq(1).and(pack_density.gt(1.75)).multiply(2))
+    .add(texture_class.eq(2).and(pack_density.lt(1.40)).multiply(3))
+    .add(texture_class.eq(2).and(pack_density.gte(1.40).and(pack_density.lte(1.75))).multiply(2))
+    .add(texture_class.eq(2).and(pack_density.gt(1.75)).multiply(2))
+    .add(texture_class.eq(3).and(pack_density.lt(1.40)).multiply(2))
+    .add(texture_class.eq(3).and(pack_density.gte(1.40).and(pack_density.lte(1.75))).multiply(2))
+    .add(texture_class.eq(3).and(pack_density.gt(1.75)).multiply(1))
+    .add(texture_class.eq(4).and(pack_density.lt(1.40)).multiply(2))
+    .add(texture_class.eq(4).and(pack_density.gte(1.40).and(pack_density.lte(1.75))).multiply(1))
+    .add(texture_class.eq(4).and(pack_density.gt(1.75)).multiply(1))
+    .add(texture_class.eq(5).and(pack_density.lt(1.40)).multiply(2))
+    .add(texture_class.eq(5).and(pack_density.gte(1.40).and(pack_density.lte(1.75))).multiply(1))
+    .add(texture_class.eq(5).and(pack_density.gt(1.75)).multiply(1))
+    .add(texture_class.eq(9).and(pack_density.lt(1.40)).multiply(4))
+    .add(texture_class.eq(9).and(pack_density.gte(1.40).and(pack_density.lte(1.75))).multiply(3));
+
+
+  // --- Hydrologic Group & Saturated Hydraulic Conductivity (Ksat) ---
+  var hydrologic_group = ee.Image(
+    "projects/sat-io/open-datasets/HiHydroSoilv2_0/Hydrologic_Soil_Group_250m"
+  );
+
+  var cfvo = ee.Image("projects/soilgrids-isric/cfvo_mean")
+    .select(["cfvo_0-5cm_mean", "cfvo_5-15cm_mean", "cfvo_15-30cm_mean"])
+    .reduce(ee.Reducer.mean())
+    .divide(10000);
+
+  var Ksat = ee.Image("projects/sat-io/open-datasets/HiHydroSoilv2_0/ksat/Ksat_0-5cm_M_250m")
+    .add(ee.Image("projects/sat-io/open-datasets/HiHydroSoilv2_0/ksat/Ksat_5-15cm_M_250m"))
+    .add(ee.Image("projects/sat-io/open-datasets/HiHydroSoilv2_0/ksat/Ksat_15-30cm_M_250m"))
+    .divide(3)
+    .divide(1e4)
+    .multiply(ee.Image(1).subtract(cfvo)); // correct for coarse fragment fraction
+
+
+  // --- Permeability Class ---
+  var permeability_class = ee.Image(0)
+    .add(Ksat.gt(146.304).and(hydrologic_group.eq(1)).multiply(1))
+    .add(Ksat.lte(146.304).and(Ksat.gt(48.768)).multiply(2))
+    .add(Ksat.lte(48.768).and(Ksat.gt(12.192)).multiply(3))
+    .add(Ksat.lte(12.192).and(Ksat.gt(4.8768)).multiply(4))
+    .add(Ksat.lte(4.8768).and(Ksat.gt(2.4384)).multiply(5))
+    .add(Ksat.lte(2.4384).multiply(6));
+
+
+  // --- Textural Factor M ---
+  var M = sand.add(silt).multiply(ee.Image(100).subtract(clay));
+
+
+  // --- Final K Value (t·ha·h / ha·MJ·mm) ---
+  var K = ee.Image(2.1).multiply(1e-4)
+    .multiply(M.pow(1.14))
+    .multiply(ee.Image(12).subtract(OM.clamp(0, 4)))
+    .add(ee.Image(3.25).multiply(structure_class.subtract(2)))
+    .add(ee.Image(2.5).multiply(permeability_class.subtract(3)))
+    .divide(100)
+    .multiply(0.1317)
+    .rename("K");
+
+  return K;
+};
+
+
+// -----------------------------------------------------------------------------
+// FACTOR R — Rainfall Erosivity (CHIRPS, 15-year mean)
+// -----------------------------------------------------------------------------
+
+exports.factorR = function (aoi) {
+
+  var endYear   = ee.Date(Date.now()).get("year");
+  var startYear = ee.Number(endYear).subtract(15);
+  var years     = ee.List.sequence(startYear, ee.Number(endYear).subtract(1));
+
+  // Compute R for each year, then average over the 15-year period
+  var annualR = ee.ImageCollection.fromImages(
+    years.map(function (year) {
+      var start = ee.Date.fromYMD(year, 1, 1);
+      var end   = ee.Date.fromYMD(year, 12, 31);
+
+      var rainfall = ee.ImageCollection("UCSB-CHG/CHIRPS/PENTAD")
+        .filterDate(start, end)
+        .select("precipitation")
+        .sum()
+        .clip(aoi);
+
+      return rainfall
+        .multiply(0.38)
+        .add(81.5)
+        .rename("R")
+        .set("year", year);
+    })
+  );
+
+  return annualR.mean().rename("R_15yr_mean");
+};
+
+
+// -----------------------------------------------------------------------------
+// FACTOR LS — Slope Length & Steepness (MERIT Hydro)
+// -----------------------------------------------------------------------------
+
+exports.factorLS = function (slope_deg, slope_rad, slope_aspect) {
+
+  // Contributing area from MERIT Hydro (converted to m², divided by 30 m pixel area)
+  var contrib_area = ee.Image("MERIT/Hydro/v1_0_1")
+    .select("upa")
+    .multiply(1e6)
+    .reproject({ crs: "EPSG:4326", scale: 30 })
+    .divide(9)
+    .clamp(0, 4000);
+
+  // Flow direction coefficient based on slope aspect
+  var slope_direction = ee.Image(0)
+    .add(slope_aspect.gt(337.5).and(slope_aspect.lte(360)).multiply(1))
+    .add(slope_aspect.gte(0).and(slope_aspect.lte(22.5)).multiply(1))
+    .add(slope_aspect.gt(22.5).and(slope_aspect.lte(77.5)).multiply(ee.Image(2).sqrt()))
+    .add(slope_aspect.gt(77.5).and(slope_aspect.lte(112.5)).multiply(1))
+    .add(slope_aspect.gt(112.5).and(slope_aspect.lte(157.5)).multiply(ee.Image(2).sqrt()))
+    .add(slope_aspect.gt(157.5).and(slope_aspect.lte(202.5)).multiply(1))
+    .add(slope_aspect.gt(202.5).and(slope_aspect.lte(247.5)).multiply(ee.Image(2).sqrt()))
+    .add(slope_aspect.gt(247.5).and(slope_aspect.lte(292.5)).multiply(1))
+    .add(slope_aspect.gt(292.5).and(slope_aspect.lte(337.5)).multiply(ee.Image(2).sqrt()));
+
+  // Variable slope-length exponent m (McCool et al.)
+  var beta = slope_rad.sin()
+    .divide(0.0896)
+    .divide(ee.Image(3).multiply(slope_rad.sin().pow(0.8).add(0.56)).abs());
+
+  var m = beta.divide(beta.add(1));
+
+  // L factor
+  var L = ee.Image(2).multiply(contrib_area)
+    .divide(ee.Image(2).multiply(30).multiply(slope_direction).multiply(22.13))
+    .pow(m)
+    .multiply(m.add(1));
+
+  // S factor (McCool 1987: separate equations for slope < 9% and >= 9%)
+  var S = ee.Algorithms.If(
+    slope_rad.tan().lt(0.09),
+    slope_rad.sin().multiply(10.8).add(0.03),
+    slope_rad.sin().multiply(16.8).subtract(0.5)
+  );
+
+  return L.multiply(S).rename("LS");
+};
+
+
+// -----------------------------------------------------------------------------
+// FACTOR S — Sustainability / Vegetation Factor (optional)
+// -----------------------------------------------------------------------------
+
+exports.factorS = function (median_image, bs_freq, fcover_ts, sr_band_scale) {
+
+  sr_band_scale = sr_band_scale || 1;
+
+  // Surface roughness derived from NIR (Band 8) gradient using Sobel filter
+  var L = ee.Image(1).add(
+    median_image.select("B8")
+      .convolve({ kernel: ee.Kernel.sobel() }).abs()
+      .add(
+        median_image.select("B8")
+          .convolve({ kernel: ee.Kernel.sobel().rotate(1) })
+          .abs()
+      )
+      .divide(sr_band_scale)
+      .sqrt()
+  );
+
+  // Fractional cover time-series integration (piecewise trapezoidal mean)
+  var fcover_arr = fcover_ts.toArray();
+  var pw_mean    = fcover_arr.arraySlice(0, 1)
+    .add(fcover_arr.arraySlice(0, 0, -1))
+    .divide(2);
+
+  var fcover_integ = pw_mean
+    .arrayReduce("mean", [0]).abs()
+    .toArray()
+    .arraySlice(0, 0, 1)
+    .arrayProject([0])
+    .arrayFlatten([["array"]]);
+
+  // Vegetation cover factor V
+  var V = ee.Image(1).subtract(bs_freq)
+    .multiply(10)
+    .clamp(5, 8)
+    .multiply(fcover_integ.divide(sr_band_scale))
+    .exp();
+
+  return ee.Image(1)
+    .divide(L.multiply(V))
+    .rename("sustainability_factor");
+};

@@ -1,0 +1,212 @@
+# =====================================================
+# 🌍 FUTURE SOIL EROSION MAP (1x4 HORIZONTAL)
+# 🔹 Nasional Class
+# 🔹 Clean Compact Journal Layout
+# =====================================================
+
+import os
+import rasterio
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+# -----------------------------------------------------
+# 1️⃣ PATH
+# -----------------------------------------------------
+data_path = r"C:\Users\Windows 10\Documents\Python Journey\Erosi Biyonga\Data Erosi"
+output_path = os.path.join(data_path, "Future_Erosion_Nasional_1x4.png")
+
+files = {
+    "SSP245 2040": "SoilLoss_2040_SSP245.tif",
+    "SSP245 2060": "SoilLoss_2060_SSP245.tif",
+    "SSP585 2040": "SoilLoss_2040_SSP585.tif",
+    "SSP585 2060": "SoilLoss_2060_SSP585.tif"
+}
+
+# -----------------------------------------------------
+# 2️⃣ KLASIFIKASI NASIONAL
+# -----------------------------------------------------
+def classify_national(data):
+    classified = np.full_like(data, np.nan)
+
+    classified[(data >= 0) & (data <= 15)] = 1
+    classified[(data > 15) & (data <= 60)] = 2
+    classified[(data > 60) & (data <= 180)] = 3
+    classified[(data > 180) & (data <= 480)] = 4
+    classified[(data > 480)] = 5
+
+    return classified
+
+# -----------------------------------------------------
+# 3️⃣ LOAD RASTER
+# -----------------------------------------------------
+rasters = {}
+extent = None
+
+for key, file in files.items():
+    with rasterio.open(os.path.join(data_path, file)) as src:
+        data = src.read(1).astype("float32")
+        data[data <= 0] = np.nan
+        rasters[key] = classify_national(data)
+
+        if extent is None:
+            bounds = src.bounds
+            extent = [bounds.left, bounds.right,
+                      bounds.bottom, bounds.top]
+
+# -----------------------------------------------------
+# 4️⃣ COLOR SCHEME
+# -----------------------------------------------------
+colors = [
+    "#1a9850",  # I
+    "#91cf60",  # II
+    "#fee08b",  # III
+    "#fc8d59",  # IV
+    "#d73027"   # V
+]
+
+bounds = [1,2,3,4,5,6]
+cmap = mcolors.ListedColormap(colors)
+norm = mcolors.BoundaryNorm(bounds, len(colors))
+
+# -----------------------------------------------------
+# 5️⃣ PLOT 1x4
+# -----------------------------------------------------
+fig, axes = plt.subplots(1, 4, figsize=(16, 10))
+axes = axes.flatten()
+
+for ax, (title, data) in zip(axes, rasters.items()):
+
+    im = ax.imshow(
+        data,
+        extent=extent,
+        origin="upper",
+        cmap=cmap,
+        norm=norm
+    )
+
+    ax.set_title(title, fontsize=11, weight="bold")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_aspect("equal")
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+# Spacing horizontal
+plt.subplots_adjust(
+    wspace=0.02,
+    bottom=0.22
+)
+
+# -----------------------------------------------------
+# 6️⃣ COLORBAR HORIZONTAL GLOBAL
+# -----------------------------------------------------
+cbar = fig.colorbar(
+    im,
+    ax=axes,
+    orientation="horizontal",
+    fraction=0.07,
+    pad=0.05,
+    ticks=[1.5,2.5,3.5,4.5,5.5]
+)
+
+cbar.ax.set_xticklabels([
+    "I (0–15)",
+    "II (15–60)",
+    "III (60–180)",
+    "IV (180–480)",
+    "V (>480)"
+])
+
+cbar.set_label("Soil Erosion Class (ton/ha/year)", fontsize=11)
+cbar.ax.tick_params(labelsize=9)
+
+# =====================================================
+# 📊 ANALISIS KOMPREHENSIF FUTURE EROSION
+# =====================================================
+
+import pandas as pd
+
+analysis_results = []
+
+# Ambil pixel area (m2)
+with rasterio.open(os.path.join(data_path, list(files.values())[0])) as src:
+    pixel_area = abs(src.res[0] * src.res[1])  # m2
+
+for scenario, classified_map in rasters.items():
+
+    # Load original continuous data lagi untuk statistik numerik
+    with rasterio.open(os.path.join(data_path, files[scenario])) as src:
+        original = src.read(1).astype("float32")
+        original[original <= 0] = np.nan
+
+    valid = original[~np.isnan(original)]
+
+    mean_val = np.mean(valid)
+    median_val = np.median(valid)
+    min_val = np.min(valid)
+    max_val = np.max(valid)
+
+    # Hitung luas per kelas
+    class_areas = []
+    class_percents = []
+
+    total_pixels = np.sum(~np.isnan(classified_map))
+    total_area = total_pixels * pixel_area / 10000  # ha
+
+    for c in [1,2,3,4,5]:
+        count = np.sum(classified_map == c)
+        area = count * pixel_area / 10000
+        percent = (area / total_area) * 100
+
+        class_areas.append(round(area,2))
+        class_percents.append(round(percent,2))
+
+    dominant_class = np.argmax(class_percents) + 1
+    severe_area = class_areas[3] + class_areas[4]  # IV + V
+
+    analysis_results.append([
+        scenario,
+        round(mean_val,2),
+        round(median_val,2),
+        round(min_val,2),
+        round(max_val,2),
+        *class_areas,
+        *class_percents,
+        dominant_class,
+        round(severe_area,2)
+    ])
+
+columns = [
+    "Scenario",
+    "Mean (t/ha/yr)",
+    "Median",
+    "Min",
+    "Max",
+    "Area I (ha)",
+    "Area II (ha)",
+    "Area III (ha)",
+    "Area IV (ha)",
+    "Area V (ha)",
+    "% I",
+    "% II",
+    "% III",
+    "% IV",
+    "% V",
+    "Dominant Class",
+    "Area Severe (IV+V) ha"
+]
+
+df_future_analysis = pd.DataFrame(analysis_results, columns=columns)
+
+print("\n===== FUTURE SOIL EROSION ANALYSIS =====\n")
+display(df_future_analysis)
+
+# -----------------------------------------------------
+# 7️⃣ SAVE HIGH RESOLUTION
+# -----------------------------------------------------
+plt.savefig(output_path, dpi=450, bbox_inches="tight")
+plt.show()
+
+print(f"\n✅ 1x4 horizontal erosion map saved at:\n{output_path}")

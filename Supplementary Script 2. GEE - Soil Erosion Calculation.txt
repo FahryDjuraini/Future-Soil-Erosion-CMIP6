@@ -1,0 +1,390 @@
+// =============================================================================
+// RUSLE – MAIN SCRIPT
+// Multi-Scenario Soil Loss Estimation under Climate Change
+// Factors: R · K · LS · C · P
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// RAINFALL SCENARIOS
+// -----------------------------------------------------------------------------
+
+var scenarios = {
+  '2024'       : h2024,
+  '2040_SSP245': SSP245_2040,
+  '2040_SSP585': SSP585_2040,
+  '2060_SSP245': SSP245_2060,
+  '2060_SSP585': SSP585_2060
+};
+
+
+// -----------------------------------------------------------------------------
+// LOAD RUSLE MODULE
+// -----------------------------------------------------------------------------
+
+var rusle = require('users/mohfahrydjuraini/UGM:RUSLEmodule');
+
+Map.centerObject(aoi, 10);
+
+
+// =============================================================================
+// FACTOR K — Soil Erodibility
+// =============================================================================
+
+var K = rusle.factorK().clip(aoi);
+
+// Compute regional mean to fill NoData pixels
+var meanK = ee.Number(
+  K.reduceRegion({
+    reducer  : ee.Reducer.mean(),
+    geometry : aoi,
+    scale    : 30,
+    maxPixels: 1e13
+  }).get('K')
+);
+
+var K_filled = K.unmask(ee.Image.constant(meanK)).clip(aoi);
+
+Map.addLayer(K_filled,
+  { min: 0, max: 0.05, palette: ['yellow', 'orange', 'red'] },
+  'Factor K (Mean-filled)');
+
+
+// =============================================================================
+// FACTOR R — Rainfall Erosivity (Baseline 2024)
+// =============================================================================
+
+print('Band names of rainfall asset:', h2024);
+
+var rainfall_2024 = h2024
+  .select('b1')
+  .rename('Rainfall')
+  .clip(aoi);
+
+var R_2024 = rainfall_2024
+  .multiply(0.38)
+  .add(81.5)
+  .rename('R')
+  .updateMask(rainfall_2024.gt(0))  // exclude zero-rainfall pixels
+  .clip(aoi);
+
+Map.addLayer(R_2024,
+  { min: 900, max: 2000,
+    palette: ['a52508', 'ff3818', 'fbff18', '25cdff', '2f35ff', '0b2dab'] },
+  'R Factor 2024');
+
+Export.image.toDrive({
+  image          : R_2024,
+  description    : 'R_factor',
+  folder         : 'GEE_RUSLE_Factors',
+  fileNamePrefix : 'R_factor',
+  region         : aoi,
+  scale          : 30,
+  maxPixels      : 1e13
+});
+
+
+// =============================================================================
+// DEM & FACTOR LS — Slope Length & Steepness (FABDEM)
+// =============================================================================
+
+// FABDEM: Hawker et al. (2022) — global 30 m DEM with buildings & vegetation removed
+var dem_col  = ee.ImageCollection("projects/sat-io/open-datasets/FABDEM");
+var dem      = dem_col.mosaic().setDefaultProjection(dem_col.first().projection());
+
+var slope_deg    = ee.Terrain.slope(dem);
+var slope_rad    = slope_deg.multiply(Math.PI / 180);
+var slope_aspect = ee.Terrain.aspect(dem);
+
+var LS = rusle.factorLS(slope_deg, slope_rad, slope_aspect).clip(aoi);
+
+Map.addLayer(LS,
+  { min: 0, max: 20, palette: ['white', 'green', 'brown'] },
+  'Factor LS');
+
+
+// =============================================================================
+// FACTOR C — Cover Management (NDVI from Sentinel-2 2024)
+// =============================================================================
+
+var start = '2024-01-01';
+var end   = '2024-12-31';
+
+// Cloud masking using Sentinel-2 Scene Classification Layer (SCL)
+function maskS2(image) {
+  var scl  = image.select('SCL');
+  var mask = scl.neq(3)   // cloud shadow
+                .and(scl.neq(8))   // medium probability cloud
+                .and(scl.neq(9))   // high probability cloud
+                .and(scl.neq(10))  // cirrus
+                .and(scl.neq(11)); // snow / ice
+
+  return image
+    .updateMask(mask)
+    .select(['B4', 'B8'])
+    .divide(10000)
+    .copyProperties(image, ['system:time_start']);
+}
+
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR')
+  .filterBounds(aoi)
+  .filterDate(start, end)
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 80))
+  .map(maskS2);
+
+print('Number of Sentinel-2 images (2024):', s2.size());
+
+var ndvi = s2.map(function (img) {
+  return img.normalizedDifference(['B8', 'B4']).rename('NDVI');
+}).median().clip(aoi);
+
+Map.addLayer(ndvi,
+  { min: -0.2, max: 0.8, palette: ['brown', 'yellow', 'green'] },
+  'NDVI 2024 (Median)');
+
+// C factor: exponential transformation of NDVI
+var C = ndvi.expression('exp(-2 * NDVI)', { 'NDVI': ndvi })
+  .rename('C')
+  .clamp(0, 1);
+
+Map.addLayer(C,
+  { min: 0, max: 1, palette: ['green', 'yellow', 'orange', 'red'] },
+  'C Factor');
+
+
+// =============================================================================
+// FACTOR P — Support Practice (ESRI LULC 2024)
+// =============================================================================
+
+// ESRI LULC class reference (simplified):
+//   1 = Water | 2 = Trees | 4 = Flooded Vegetation | 5 = Crops
+//   7 = Built Area | 8 = Bare Ground
+
+var esri = ee.ImageCollection(
+    "projects/sat-io/open-datasets/landcover/ESRI_Global-LULC_10m_TS"
+  )
+  .filterDate(start, end)
+  .mosaic()
+  .select('b1')
+  .rename('lulc')
+  .clip(aoi);
+
+Map.addLayer(esri.randomVisualizer(), {}, 'ESRI LULC 2024', false);
+
+var lulc_slope = esri.addBands(slope_deg.rename('slope'));
+
+var P = lulc_slope.expression(
+    "(b('lulc') == 2) ? 0.6"                                              // Forest
+  + ": (b('lulc') == 4) ? 0.7"                                           // Flooded vegetation
+  + ": (b('lulc') == 5 && b('slope') <= 5)  ? 0.5"                       // Cropland, gentle slope
+  + ": (b('lulc') == 5 && b('slope') > 5  && b('slope') <= 15) ? 0.7"   // Cropland, moderate slope
+  + ": (b('lulc') == 5 && b('slope') > 15) ? 0.9"                        // Cropland, steep slope
+  + ": (b('lulc') == 7) ? 1.0"                                           // Built area
+  + ": (b('lulc') == 8) ? 1.0"                                           // Bare ground
+  + ": 1"                                                                 // Default (no practice)
+).rename('P').clip(aoi);
+
+Map.addLayer(P,
+  { min: 0.5, max: 1.0, palette: ['green', 'yellow', 'orange', 'red'] },
+  'P Factor');
+
+
+// =============================================================================
+// RUSLE FUNCTION — Compute Soil Loss & Erosion Classification per Scenario
+// =============================================================================
+
+function runScenario(name, asset) {
+
+  // --- R Factor ---
+  var rainfall = ee.Image(asset)
+    .select('b1')
+    .rename('Rainfall')
+    .clip(aoi);
+
+  var R = rainfall
+    .multiply(0.38)
+    .add(81.5)
+    .rename('R')
+    .updateMask(rainfall.gt(0))
+    .clip(aoi);
+
+  // --- Soil Loss (R x K x LS x C x P) ---
+  var SoilLoss = R
+    .multiply(K_filled)
+    .multiply(LS)
+    .multiply(C)
+    .multiply(P)
+    .rename('Soil_Loss_' + name)
+    .clip(aoi);
+
+  Map.addLayer(SoilLoss,
+    { min: 0, max: 100, palette: ['white', 'yellow', 'orange', 'red'] },
+    'Soil Loss ' + name);
+
+  // --- Mean Soil Loss ---
+  var mean_loss = SoilLoss.reduceRegion({
+    reducer  : ee.Reducer.mean(),
+    geometry : aoi,
+    scale    : 30,
+    maxPixels: 1e13
+  });
+
+  print('Mean Soil Loss ' + name + ' (t/ha/yr):', mean_loss);
+
+  // --- Erosion Classification (Indonesian Standard) ---
+  var erosionClass = ee.Image(0)
+    .where(SoilLoss.lte(15), 1)
+    .where(SoilLoss.gt(15) .and(SoilLoss.lte(60)),  2)
+    .where(SoilLoss.gt(60) .and(SoilLoss.lte(180)), 3)
+    .where(SoilLoss.gt(180).and(SoilLoss.lte(480)), 4)
+    .where(SoilLoss.gt(480), 5)
+    .updateMask(SoilLoss.mask())
+    .clip(aoi)
+    .rename('Erosion_Class_' + name);
+
+  Map.addLayer(erosionClass, {
+    min    : 1,
+    max    : 5,
+    palette: ['#1a9850', '#91cf60', '#fee08b', '#fc8d59', '#d73027']
+  }, 'Erosion Class ' + name);
+
+  return SoilLoss;
+}
+
+
+// =============================================================================
+// EXPORT RUSLE FACTORS
+// =============================================================================
+
+var exportParams = { region: aoi, scale: 30, maxPixels: 1e13 };
+
+Export.image.toDrive(Object.assign({
+  image: K_filled, description: 'RUSLE_K_factor',
+  folder: 'GEE_RUSLE_Factors', fileNamePrefix: 'K_factor'
+}, exportParams));
+
+Export.image.toDrive(Object.assign({
+  image: LS, description: 'RUSLE_LS_factor',
+  folder: 'GEE_RUSLE_Factors', fileNamePrefix: 'LS_factor'
+}, exportParams));
+
+Export.image.toDrive(Object.assign({
+  image: C, description: 'RUSLE_C_factor',
+  folder: 'GEE_RUSLE_Factors', fileNamePrefix: 'C_factor'
+}, exportParams));
+
+Export.image.toDrive(Object.assign({
+  image: P, description: 'RUSLE_P_factor',
+  folder: 'GEE_RUSLE_Factors', fileNamePrefix: 'P_factor'
+}, exportParams));
+
+
+// =============================================================================
+// RUN ALL SCENARIOS
+// =============================================================================
+
+var results = {};
+
+for (var key in scenarios) {
+  results[key] = runScenario(key, scenarios[key]);
+}
+
+
+// =============================================================================
+// LEGEND — Erosion Classification
+// =============================================================================
+
+var legend = ui.Panel({
+  style: { position: 'bottom-left', padding: '8px 15px' }
+});
+
+legend.add(ui.Label({
+  value: 'Erosion Class (t/ha/year)',
+  style: { fontWeight: 'bold', fontSize: '14px' }
+}));
+
+function makeRow(color, label) {
+  var colorBox = ui.Label({
+    style: { backgroundColor: color, padding: '8px', margin: '0 0 4px 0' }
+  });
+  var text = ui.Label({
+    value: label,
+    style: { margin: '0 0 4px 6px' }
+  });
+  return ui.Panel({
+    widgets: [colorBox, text],
+    layout : ui.Panel.Layout.Flow('horizontal')
+  });
+}
+
+legend.add(makeRow('#1a9850', 'I   : 0-15      (Very Low)'));
+legend.add(makeRow('#91cf60', 'II  : 15-60     (Low)'));
+legend.add(makeRow('#fee08b', 'III : 60-180    (Moderate)'));
+legend.add(makeRow('#fc8d59', 'IV  : 180-480   (High)'));
+legend.add(makeRow('#d73027', 'V   : >480      (Very High)'));
+
+Map.add(legend);
+
+
+// =============================================================================
+// CHANGE ANALYSIS — Bar Chart & Percentage Delta per Scenario
+// =============================================================================
+
+function getMean(image) {
+  return image.reduceRegion({
+    reducer  : ee.Reducer.mean(),
+    geometry : aoi,
+    scale    : 30,
+    maxPixels: 1e13
+  }).values().get(0);
+}
+
+var mean2024     = getMean(results['2024']);
+var mean2040_245 = getMean(results['2040_SSP245']);
+var mean2040_585 = getMean(results['2040_SSP585']);
+var mean2060_245 = getMean(results['2060_SSP245']);
+var mean2060_585 = getMean(results['2060_SSP585']);
+
+// --- Bar Chart ---
+var chart = ui.Chart.array.values(
+  ee.Array([mean2024, mean2040_245, mean2040_585, mean2060_245, mean2060_585]),
+  0,
+  ['2024', '2040 SSP245', '2040 SSP585', '2060 SSP245', '2060 SSP585']
+)
+.setChartType('ColumnChart')
+.setOptions({
+  title : 'Projected Soil Erosion Change',
+  hAxis : { title: 'Scenario' },
+  vAxis : { title: 'Mean Soil Loss (t/ha/yr)' },
+  legend: { position: 'none' }
+});
+
+print(chart);
+
+// --- Percentage Change Relative to 2024 Baseline ---
+function percentChange(future, baseline) {
+  return ee.Number(future).subtract(baseline).divide(baseline).multiply(100);
+}
+
+print('Delta 2040 SSP245 (%)', percentChange(mean2040_245, mean2024));
+print('Delta 2040 SSP585 (%)', percentChange(mean2040_585, mean2024));
+print('Delta 2060 SSP245 (%)', percentChange(mean2060_245, mean2024));
+print('Delta 2060 SSP585 (%)', percentChange(mean2060_585, mean2024));
+
+
+// =============================================================================
+// EXPORT SOIL LOSS PER SCENARIO
+// =============================================================================
+
+for (var key in results) {
+  Export.image.toDrive({
+    image          : results[key],
+    description    : 'SoilLoss_' + key,
+    folder         : 'GEE_RUSLE',
+    fileNamePrefix : 'SoilLoss_' + key,
+    region         : aoi,
+    scale          : 30,
+    maxPixels      : 1e13,
+    crs            : 'EPSG:4326'
+  });
+}
