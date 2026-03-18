@@ -117,3 +117,46 @@ Objectives:
 
 ### Python (≥ 3.9)
 Required libraries:
+
+
+
+---
+
+## 🚀 How to Use
+
+1. Run GEE scripts to generate:
+   - R, K, LS, C, P factors
+   - Soil loss maps
+
+2. Export results to GeoTIFF
+
+3. Use Python scripts to:
+   - Perform bias correction
+   - Analyze historical & future erosion
+   - Generate figures and statistics
+
+---
+
+## 📌 Notes
+
+- Scripts are modular and adaptable to other watersheds
+- Input data (AOI, climate scenarios) should be customized
+- Outputs are suitable for:
+  - Scientific publication
+  - Policy and planning support
+
+---
+
+## 👨‍💻 Author
+
+**Moh. Fahry Djuraini**  
+Master Program in Geography  
+Universitas Gadjah Mada  
+
+---
+
+## 📬 Contact
+
+📧 mohfahrydjuraini@mail.ugm.ac.id
+
+---
