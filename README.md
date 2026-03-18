@@ -1,4 +1,5 @@
 # 🌍 Climate Change Impacts on Soil Erosion in a Tropical Watershed
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19089923.svg)](https://doi.org/10.5281/zenodo.19089923)
 
 This repository provides a complete and reproducible workflow for assessing soil erosion dynamics under climate change scenarios in a tropical watershed. The framework integrates **Regional Climate Model outputs (SINGV)**, **Google Earth Engine (GEE)**, and the **Revised Universal Soil Loss Equation (RUSLE)**.
 
@@ -108,6 +109,20 @@ Objectives:
 - Evaluate future erosion risks
 - Support sustainable watershed management
 
+## 📂 Data Availability
+
+All datasets used in this study are publicly available on Zenodo:
+
+🔗 https://doi.org/10.5281/zenodo.19089923
+
+The dataset includes:
+- Climate model outputs (SINGV RCM)
+- Processed rainfall data
+- RUSLE factor inputs
+- Soil erosion outputs (historical and future scenarios)
+
+Due to size limitations, datasets are not stored in this repository. Users are encouraged to download the data directly from Zenodo and use it with the provided scripts.
+
 ---
 
 ## 🛠️ Requirements
@@ -124,13 +139,16 @@ Required libraries:
 
 ## 🚀 How to Use
 
-1. Run GEE scripts to generate:
+1. Download dataset from Zenodo:
+   https://doi.org/10.5281/zenodo.19089923
+
+2. Run GEE scripts to generate:
    - R, K, LS, C, P factors
    - Soil loss maps
 
-2. Export results to GeoTIFF
+3. Export results to GeoTIFF
 
-3. Use Python scripts to:
+4. Use Python scripts to:
    - Perform bias correction
    - Analyze historical & future erosion
    - Generate figures and statistics
@@ -149,7 +167,7 @@ Required libraries:
 
 ## 👨‍💻 Author
 
-Djuraini, M. F., Utami, S., Adzimah, N. L., Benediktus, S., Mellyana, I. M., Putri, N. R. C., Hidayat, W., & Mulabbi, A. (2026)
+Djuraini, M. F., Utami, S., Adzimah, N. L., Benediktus, S., Mellyana, I. M., Putri, N. R. C., Hidayat, W., & Mulabbi, A. (2026).
 
 ---
 
